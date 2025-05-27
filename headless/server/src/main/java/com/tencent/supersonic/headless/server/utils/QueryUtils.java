@@ -135,10 +135,11 @@ public class QueryUtils {
         if (StringUtils.isBlank(type)) {
             return false;
         }
-        return type.toLowerCase().endsWith("int") || type.equalsIgnoreCase("float")
-                || type.equalsIgnoreCase("double") || type.equalsIgnoreCase("real")
-                || type.equalsIgnoreCase("numeric") || type.toLowerCase().startsWith("decimal")
-                || type.equalsIgnoreCase("decfloat");
+        return type.toLowerCase().endsWith("int") || type.toLowerCase().startsWith("int")
+                || type.toLowerCase().endsWith("float") || type.toLowerCase().startsWith("float")
+                || type.toLowerCase().endsWith("double") || type.toLowerCase().startsWith("double")
+                || type.equalsIgnoreCase("real") || type.equalsIgnoreCase("numeric")
+                || type.toLowerCase().startsWith("decimal");
     }
 
     private String getName(String nameEn) {

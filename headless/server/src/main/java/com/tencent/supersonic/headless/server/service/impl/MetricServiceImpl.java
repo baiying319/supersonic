@@ -439,9 +439,8 @@ public class MetricServiceImpl extends ServiceImpl<MetricDOMapper, MetricDO>
         metricFilter.setBizName(bizName);
         metricFilter.setModelIds(Lists.newArrayList(modelId));
         List<MetricResp> metricResps = getMetrics(metricFilter);
-        MetricResp metricResp = null;
         if (CollectionUtils.isEmpty(metricResps)) {
-            return metricResp;
+            return null;
         }
         return metricResps.get(0);
     }
@@ -712,6 +711,15 @@ public class MetricServiceImpl extends ServiceImpl<MetricDOMapper, MetricDO>
         }
         if (!modelCluster.isContainsPartitionDimensions()) {
             queryMetricReq.setDateInfo(null);
+        } else {
+            // set date field
+            DimensionResp partitionDimension = dimensionResps.stream()
+                    .filter(entry -> modelCluster.getModelIds().contains(entry.getModelId()))
+                    .filter(entry -> entry.getStatus().equals(StatusEnum.ONLINE.getCode()))
+                    .filter(entry -> entry.isPartitionTime()).findFirst().orElse(null);
+            if (partitionDimension != null) {
+                queryMetricReq.getDateInfo().setDateField(partitionDimension.getName());
+            }
         }
         // 4. set groups
         List<String> dimensionNames = dimensionResps.stream()
