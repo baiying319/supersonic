@@ -39,6 +39,8 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
 
+import static com.tencent.supersonic.common.pojo.DimensionConstants.DIMENSION_TIME_FORMAT;
+
 @Service
 @Slf4j
 public class ModelServiceImpl implements ModelService {
@@ -95,7 +97,7 @@ public class ModelServiceImpl implements ModelService {
         // create or update metric
         List<MetricReq> metricReqs = ModelConverter.convertMetricList(modelDO);
         metricService.alterMetricBatch(metricReqs, modelDO.getId(), user);
-        sendEvent(modelDO, EventType.ADD);
+        sendEvent(modelDO, EventType.ADD, user);
         return ModelConverter.convert(modelDO);
     }
 
@@ -129,7 +131,7 @@ public class ModelServiceImpl implements ModelService {
         // create or update metric
         List<MetricReq> metricReqs = ModelConverter.convertMetricList(modelDO);
         metricService.alterMetricBatch(metricReqs, modelDO.getId(), user);
-        sendEvent(modelDO, EventType.UPDATE);
+        sendEvent(modelDO, EventType.UPDATE, user);
         return ModelConverter.convert(modelDO);
     }
 
@@ -507,14 +509,14 @@ public class ModelServiceImpl implements ModelService {
             if (StatusEnum.OFFLINE.getCode().equals(metaBatchReq.getStatus())
                     || StatusEnum.DELETED.getCode().equals(metaBatchReq.getStatus())) {
                 metricService.sendMetricEventBatch(Lists.newArrayList(modelDO.getId()),
-                        EventType.DELETE);
+                        EventType.DELETE, user);
                 dimensionService.sendDimensionEventBatch(Lists.newArrayList(modelDO.getId()),
-                        EventType.DELETE);
+                        EventType.DELETE, user);
             } else if (StatusEnum.ONLINE.getCode().equals(metaBatchReq.getStatus())) {
                 metricService.sendMetricEventBatch(Lists.newArrayList(modelDO.getId()),
-                        EventType.ADD);
+                        EventType.ADD, user);
                 dimensionService.sendDimensionEventBatch(Lists.newArrayList(modelDO.getId()),
-                        EventType.ADD);
+                        EventType.ADD, user);
             }
         }).collect(Collectors.toList());
         modelRepository.batchUpdate(modelDOS);
@@ -530,17 +532,23 @@ public class ModelServiceImpl implements ModelService {
                 Optional<Dimension> dimOptional = modelDetail.getDimensions().stream().filter(
                         dimension -> dimension.getBizName().equals(dimensionReq.getBizName()))
                         .findFirst();
+                String dateFormat = null;
+                if (dimensionReq.getExt().containsKey(DIMENSION_TIME_FORMAT)) {
+                    dateFormat = (String) dimensionReq.getExt().get(DIMENSION_TIME_FORMAT);
+                }
                 if (dimOptional.isPresent()) {
                     Dimension dimension = dimOptional.get();
                     dimension.setExpr(dimensionReq.getExpr());
                     dimension.setName(dimensionReq.getName());
                     dimension.setType(DimensionType.valueOf(dimensionReq.getType()));
                     dimension.setDescription(dimensionReq.getDescription());
+                    dimension.setDateFormat(dateFormat);
                 } else {
                     Dimension dimension = Dimension.builder().name(dimensionReq.getName())
                             .bizName(dimensionReq.getBizName()).expr(dimensionReq.getExpr())
                             .type(DimensionType.valueOf(dimensionReq.getType()))
-                            .description(dimensionReq.getDescription()).build();
+                            .dateFormat(dateFormat).description(dimensionReq.getDescription())
+                            .build();
                     modelDetail.getDimensions().add(dimension);
                 }
             });
@@ -670,9 +678,10 @@ public class ModelServiceImpl implements ModelService {
         return false;
     }
 
-    private void sendEvent(ModelDO modelDO, EventType eventType) {
+    private void sendEvent(ModelDO modelDO, EventType eventType, User user) {
         DataItem dataItem = getDataItem(modelDO);
-        eventPublisher.publishEvent(new DataEvent(this, Lists.newArrayList(dataItem), eventType));
+        eventPublisher.publishEvent(
+                new DataEvent(this, Lists.newArrayList(dataItem), eventType, user.getName()));
     }
 
     private DataItem getDataItem(ModelDO modelDO) {

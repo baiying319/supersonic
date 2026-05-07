@@ -35,6 +35,8 @@ public interface ChatManageService {
 
     QueryResp getChatQuery(Long queryId);
 
+    ChatQueryDO getChatQueryDO(Long queryId);
+
     List<QueryResp> getChatQueries(Integer chatId);
 
     ShowCaseResp queryShowCase(PageQueryInfoReq pageQueryInfoReq, int agentId);
@@ -50,4 +52,6 @@ public interface ChatManageService {
     List<ChatParseDO> batchAddParse(ChatParseReq chatParseReq, ChatParseResp chatParseResp);
 
     SemanticParseInfo getParseInfo(Long questionId, int parseId);
+
+    List<SemanticParseInfo> getParseInfos(Long questionId);
 }

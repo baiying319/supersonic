@@ -8,23 +8,61 @@ import com.github.pagehelper.PageInfo;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
-import com.tencent.supersonic.common.pojo.*;
-import com.tencent.supersonic.common.pojo.enums.*;
+import com.tencent.supersonic.common.pojo.Aggregator;
+import com.tencent.supersonic.common.pojo.DataEvent;
+import com.tencent.supersonic.common.pojo.DataItem;
+import com.tencent.supersonic.common.pojo.DateConf;
+import com.tencent.supersonic.common.pojo.Filter;
+import com.tencent.supersonic.common.pojo.User;
+import com.tencent.supersonic.common.pojo.enums.AuthType;
+import com.tencent.supersonic.common.pojo.enums.EventType;
+import com.tencent.supersonic.common.pojo.enums.QueryType;
+import com.tencent.supersonic.common.pojo.enums.StatusEnum;
+import com.tencent.supersonic.common.pojo.enums.TypeEnums;
 import com.tencent.supersonic.common.util.BeanMapper;
-import com.tencent.supersonic.common.util.JsonUtil;
-import com.tencent.supersonic.headless.api.pojo.*;
-import com.tencent.supersonic.headless.api.pojo.enums.DimensionType;
+import com.tencent.supersonic.headless.api.pojo.DrillDownDimension;
+import com.tencent.supersonic.headless.api.pojo.Measure;
+import com.tencent.supersonic.headless.api.pojo.MetaFilter;
+import com.tencent.supersonic.headless.api.pojo.MetricParam;
+import com.tencent.supersonic.headless.api.pojo.MetricQueryDefaultConfig;
+import com.tencent.supersonic.headless.api.pojo.SchemaElementMatch;
+import com.tencent.supersonic.headless.api.pojo.SchemaElementType;
+import com.tencent.supersonic.headless.api.pojo.SchemaItem;
 import com.tencent.supersonic.headless.api.pojo.enums.MapModeEnum;
 import com.tencent.supersonic.headless.api.pojo.enums.MetricDefineType;
-import com.tencent.supersonic.headless.api.pojo.request.*;
-import com.tencent.supersonic.headless.api.pojo.response.*;
+import com.tencent.supersonic.headless.api.pojo.request.MetaBatchReq;
+import com.tencent.supersonic.headless.api.pojo.request.MetricBaseReq;
+import com.tencent.supersonic.headless.api.pojo.request.MetricReq;
+import com.tencent.supersonic.headless.api.pojo.request.PageMetricReq;
+import com.tencent.supersonic.headless.api.pojo.request.QueryMapReq;
+import com.tencent.supersonic.headless.api.pojo.request.QueryMetricReq;
+import com.tencent.supersonic.headless.api.pojo.request.QueryStructReq;
+import com.tencent.supersonic.headless.api.pojo.response.DataSetMapInfo;
+import com.tencent.supersonic.headless.api.pojo.response.DataSetResp;
+import com.tencent.supersonic.headless.api.pojo.response.DimensionResp;
+import com.tencent.supersonic.headless.api.pojo.response.MapInfoResp;
+import com.tencent.supersonic.headless.api.pojo.response.MetricResp;
+import com.tencent.supersonic.headless.api.pojo.response.ModelResp;
 import com.tencent.supersonic.headless.server.facade.service.ChatLayerService;
-import com.tencent.supersonic.headless.server.persistence.dataobject.*;
+import com.tencent.supersonic.headless.server.persistence.dataobject.CollectDO;
+import com.tencent.supersonic.headless.server.persistence.dataobject.MetricDO;
+import com.tencent.supersonic.headless.server.persistence.dataobject.MetricQueryDefaultConfigDO;
 import com.tencent.supersonic.headless.server.persistence.mapper.MetricDOMapper;
 import com.tencent.supersonic.headless.server.persistence.repository.MetricRepository;
-import com.tencent.supersonic.headless.server.pojo.*;
-import com.tencent.supersonic.headless.server.service.*;
-import com.tencent.supersonic.headless.server.utils.*;
+import com.tencent.supersonic.headless.server.pojo.DimensionsFilter;
+import com.tencent.supersonic.headless.server.pojo.MetricFilter;
+import com.tencent.supersonic.headless.server.pojo.MetricsFilter;
+import com.tencent.supersonic.headless.server.pojo.ModelCluster;
+import com.tencent.supersonic.headless.server.pojo.ModelFilter;
+import com.tencent.supersonic.headless.server.service.CollectService;
+import com.tencent.supersonic.headless.server.service.DataSetService;
+import com.tencent.supersonic.headless.server.service.DimensionService;
+import com.tencent.supersonic.headless.server.service.MetricService;
+import com.tencent.supersonic.headless.server.service.ModelService;
+import com.tencent.supersonic.headless.server.utils.AliasGenerateHelper;
+import com.tencent.supersonic.headless.server.utils.MetricCheckUtils;
+import com.tencent.supersonic.headless.server.utils.MetricConverter;
+import com.tencent.supersonic.headless.server.utils.ModelClusterBuilder;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.BeanUtils;
@@ -33,7 +71,18 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.util.CollectionUtils;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -41,21 +90,21 @@ import java.util.stream.Collectors;
 public class MetricServiceImpl extends ServiceImpl<MetricDOMapper, MetricDO>
         implements MetricService {
 
-    private MetricRepository metricRepository;
+    private final MetricRepository metricRepository;
 
-    private ModelService modelService;
+    private final ModelService modelService;
 
-    private DimensionService dimensionService;
+    private final DimensionService dimensionService;
 
-    private AliasGenerateHelper aliasGenerateHelper;
+    private final AliasGenerateHelper aliasGenerateHelper;
 
-    private CollectService collectService;
+    private final CollectService collectService;
 
-    private DataSetService dataSetService;
+    private final DataSetService dataSetService;
 
-    private ApplicationEventPublisher eventPublisher;
+    private final ApplicationEventPublisher eventPublisher;
 
-    private ChatLayerService chatLayerService;
+    private final ChatLayerService chatLayerService;
 
     public MetricServiceImpl(MetricRepository metricRepository, ModelService modelService,
             AliasGenerateHelper aliasGenerateHelper, CollectService collectService,
@@ -78,7 +127,7 @@ public class MetricServiceImpl extends ServiceImpl<MetricDOMapper, MetricDO>
         metricReq.createdBy(user.getName());
         MetricDO metricDO = MetricConverter.convert2MetricDO(metricReq);
         metricRepository.createMetric(metricDO);
-        sendEventBatch(Lists.newArrayList(metricDO), EventType.ADD);
+        sendEventBatch(Lists.newArrayList(metricDO), EventType.ADD, user);
         // should update modelDetail as well
         modelService.updateModelByDimAndMetric(metricReq.getModelId(), null,
                 Lists.newArrayList(metricReq), user);
@@ -97,7 +146,7 @@ public class MetricServiceImpl extends ServiceImpl<MetricDOMapper, MetricDO>
         modelService.updateModelByDimAndMetric(metricReqs.get(0).getModelId(), null, metricReqs,
                 user);
 
-        sendEventBatch(metricDOS, EventType.ADD);
+        sendEventBatch(metricDOS, EventType.ADD, user);
     }
 
     @Override
@@ -108,44 +157,15 @@ public class MetricServiceImpl extends ServiceImpl<MetricDOMapper, MetricDO>
                 .collect(Collectors.toMap(MetricResp::getBizName, a -> a, (k1, k2) -> k1));
 
         List<MetricReq> metricToInsert = Lists.newArrayList();
-        List<MetricReq> metricToUpdate = Lists.newArrayList();
-        List<Long> metricToDelete = Lists.newArrayList();
-
-        metricReqs.stream().forEach(metric -> {
+        metricReqs.forEach(metric -> {
             if (!bizNameMap.containsKey(metric.getBizName())) {
                 metricToInsert.add(metric);
-            } else {
-                MetricResp metricRespByBizName = bizNameMap.get(metric.getBizName());
-                if (null != metricRespByBizName && isChange(metric, metricRespByBizName)) {
-                    metric.setId(metricRespByBizName.getId());
-                    metric.updatedBy(user.getName());
-                    metricToUpdate.add(metric);
-                }
-            }
-        });
-
-        // the bizNames from alter dimensions
-        List<String> bizNames =
-                metricReqs.stream().map(MetricReq::getBizName).collect(Collectors.toList());
-        bizNameMap.keySet().forEach(bizNameInDb -> {
-            if (!bizNames.contains(bizNameInDb)) {
-                metricToDelete.add(bizNameMap.get(bizNameInDb).getId());
             }
         });
 
         // insert
         if (!CollectionUtils.isEmpty(metricToInsert)) {
             createMetricBatch(metricToInsert, user);
-        }
-
-        // update
-        if (!CollectionUtils.isEmpty(metricToUpdate)) {
-            updateMetricBatch(metricToUpdate, user);
-        }
-
-        // delete
-        if (!CollectionUtils.isEmpty(metricToDelete)) {
-            deleteMetricBatch(metricToDelete, user);
         }
 
     }
@@ -163,7 +183,7 @@ public class MetricServiceImpl extends ServiceImpl<MetricDOMapper, MetricDO>
             DataItem dataItem = getDataItem(metricDO);
             dataItem.setName(oldName);
             dataItem.setNewName(metricDO.getName());
-            sendEvent(dataItem, EventType.UPDATE);
+            sendEvent(dataItem, EventType.UPDATE, user);
         }
         // should update modelDetail as well
         modelService.updateModelByDimAndMetric(metricReq.getModelId(), null,
@@ -181,7 +201,7 @@ public class MetricServiceImpl extends ServiceImpl<MetricDOMapper, MetricDO>
         // should update modelDetail as well
         modelService.updateModelByDimAndMetric(metricReqs.get(0).getModelId(), null, metricReqs,
                 user);
-        sendEventBatch(metricDOS, EventType.UPDATE);
+        sendEventBatch(metricDOS, EventType.UPDATE, user);
     }
 
 
@@ -202,9 +222,9 @@ public class MetricServiceImpl extends ServiceImpl<MetricDOMapper, MetricDO>
         metricRepository.batchUpdateStatus(metricDOS);
         if (StatusEnum.OFFLINE.getCode().equals(metaBatchReq.getStatus())
                 || StatusEnum.DELETED.getCode().equals(metaBatchReq.getStatus())) {
-            sendEventBatch(metricDOS, EventType.DELETE);
+            sendEventBatch(metricDOS, EventType.DELETE, user);
         } else if (StatusEnum.ONLINE.getCode().equals(metaBatchReq.getStatus())) {
-            sendEventBatch(metricDOS, EventType.ADD);
+            sendEventBatch(metricDOS, EventType.ADD, user);
         }
     }
 
@@ -285,7 +305,7 @@ public class MetricServiceImpl extends ServiceImpl<MetricDOMapper, MetricDO>
         // should update modelDetail
         modelService.deleteModelDetailByDimAndMetric(metricDO.getModelId(), null,
                 Lists.newArrayList(metricDO));
-        sendEventBatch(Lists.newArrayList(metricDO), EventType.DELETE);
+        sendEventBatch(Lists.newArrayList(metricDO), EventType.DELETE, user);
     }
 
     @Override
@@ -306,7 +326,7 @@ public class MetricServiceImpl extends ServiceImpl<MetricDOMapper, MetricDO>
         // should update modelDetail
         modelService.deleteModelDetailByDimAndMetric(metricDOList.get(0).getModelId(), null,
                 metricDOList);
-        sendEventBatch(metricDOList, EventType.DELETE);
+        sendEventBatch(metricDOList, EventType.DELETE, user);
     }
 
     @Override
@@ -354,7 +374,15 @@ public class MetricServiceImpl extends ServiceImpl<MetricDOMapper, MetricDO>
         MetricFilter metricFilter = new MetricFilter();
         metricFilter.setUserName(user.getName());
         BeanUtils.copyProperties(pageMetricReq, metricFilter);
-        if (!CollectionUtils.isEmpty(pageMetricReq.getDomainIds())) {
+
+        // If dataSetId is provided, get models directly from the dataset
+        if (pageMetricReq.getDataSetId() != null) {
+            DataSetResp dataSetResp = dataSetService.getDataSet(pageMetricReq.getDataSetId());
+            if (dataSetResp != null) {
+                pageMetricReq.getModelIds().addAll(dataSetResp.getAllModels());
+            }
+        } else if (!CollectionUtils.isEmpty(pageMetricReq.getDomainIds())) {
+            // Only check domainIds when dataSetId is not provided
             List<ModelResp> modelResps =
                     modelService.getAllModelByDomainIds(pageMetricReq.getDomainIds());
             List<Long> modelIds =
@@ -661,11 +689,11 @@ public class MetricServiceImpl extends ServiceImpl<MetricDOMapper, MetricDO>
     }
 
     @Override
-    public void sendMetricEventBatch(List<Long> modelIds, EventType eventType) {
+    public void sendMetricEventBatch(List<Long> modelIds, EventType eventType, User user) {
         MetricFilter metricFilter = new MetricFilter();
         metricFilter.setModelIds(modelIds);
         List<MetricDO> metricDOS = queryMetric(metricFilter);
-        sendEventBatch(metricDOS, eventType);
+        sendEventBatch(metricDOS, eventType, user);
     }
 
     @Override
@@ -678,22 +706,23 @@ public class MetricServiceImpl extends ServiceImpl<MetricDOMapper, MetricDO>
     public DataEvent getDataEvent() {
         MetricsFilter metricsFilter = new MetricsFilter();
         List<MetricDO> metricDOS = metricRepository.getMetrics(metricsFilter);
-        return getDataEvent(metricDOS, EventType.ADD);
+        return getDataEvent(metricDOS, EventType.ADD, User.getDefaultUser());
     }
 
-    private DataEvent getDataEvent(List<MetricDO> metricDOS, EventType eventType) {
+    private DataEvent getDataEvent(List<MetricDO> metricDOS, EventType eventType, User user) {
         List<DataItem> dataItems = metricDOS.stream().map(this::getDataItem)
                 .filter(Objects::nonNull).collect(Collectors.toList());
-        return new DataEvent(this, dataItems, eventType);
+        return new DataEvent(this, dataItems, eventType, user.getName());
     }
 
-    private void sendEventBatch(List<MetricDO> metricDOS, EventType eventType) {
-        DataEvent dataEvent = getDataEvent(metricDOS, eventType);
+    private void sendEventBatch(List<MetricDO> metricDOS, EventType eventType, User user) {
+        DataEvent dataEvent = getDataEvent(metricDOS, eventType, user);
         eventPublisher.publishEvent(dataEvent);
     }
 
-    private void sendEvent(DataItem dataItem, EventType eventType) {
-        eventPublisher.publishEvent(new DataEvent(this, Lists.newArrayList(dataItem), eventType));
+    private void sendEvent(DataItem dataItem, EventType eventType, User user) {
+        eventPublisher.publishEvent(
+                new DataEvent(this, Lists.newArrayList(dataItem), eventType, user.getName()));
     }
 
     private DataItem getDataItem(MetricDO metricDO) {

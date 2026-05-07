@@ -8,7 +8,10 @@ import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
-import com.tencent.supersonic.common.pojo.*;
+import com.tencent.supersonic.common.pojo.DataEvent;
+import com.tencent.supersonic.common.pojo.DataItem;
+import com.tencent.supersonic.common.pojo.ModelRela;
+import com.tencent.supersonic.common.pojo.User;
 import com.tencent.supersonic.common.pojo.enums.EventType;
 import com.tencent.supersonic.common.pojo.enums.StatusEnum;
 import com.tencent.supersonic.common.pojo.enums.TypeEnums;
@@ -22,14 +25,22 @@ import com.tencent.supersonic.headless.api.pojo.request.DimValueAliasReq;
 import com.tencent.supersonic.headless.api.pojo.request.DimensionReq;
 import com.tencent.supersonic.headless.api.pojo.request.MetaBatchReq;
 import com.tencent.supersonic.headless.api.pojo.request.PageDimensionReq;
-import com.tencent.supersonic.headless.api.pojo.response.*;
+import com.tencent.supersonic.headless.api.pojo.response.DataSetResp;
+import com.tencent.supersonic.headless.api.pojo.response.DatabaseResp;
+import com.tencent.supersonic.headless.api.pojo.response.DimensionResp;
+import com.tencent.supersonic.headless.api.pojo.response.ModelResp;
+import com.tencent.supersonic.headless.api.pojo.response.SemanticQueryResp;
 import com.tencent.supersonic.headless.server.persistence.dataobject.DimensionDO;
 import com.tencent.supersonic.headless.server.persistence.mapper.DimensionDOMapper;
 import com.tencent.supersonic.headless.server.persistence.repository.DimensionRepository;
 import com.tencent.supersonic.headless.server.pojo.DimensionFilter;
 import com.tencent.supersonic.headless.server.pojo.DimensionsFilter;
 import com.tencent.supersonic.headless.server.pojo.ModelFilter;
-import com.tencent.supersonic.headless.server.service.*;
+import com.tencent.supersonic.headless.server.service.DataSetService;
+import com.tencent.supersonic.headless.server.service.DatabaseService;
+import com.tencent.supersonic.headless.server.service.DimensionService;
+import com.tencent.supersonic.headless.server.service.ModelRelaService;
+import com.tencent.supersonic.headless.server.service.ModelService;
 import com.tencent.supersonic.headless.server.utils.AliasGenerateHelper;
 import com.tencent.supersonic.headless.server.utils.DimensionConverter;
 import com.tencent.supersonic.headless.server.utils.NameCheckUtils;
@@ -37,12 +48,17 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.builder.EqualsBuilder;
 import org.springframework.beans.BeanUtils;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.util.CollectionUtils;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -50,31 +66,31 @@ import java.util.stream.Collectors;
 public class DimensionServiceImpl extends ServiceImpl<DimensionDOMapper, DimensionDO>
         implements DimensionService {
 
-    private DimensionRepository dimensionRepository;
+    private final DimensionRepository dimensionRepository;
 
-    private ModelService modelService;
+    private final ModelService modelService;
 
-    private AliasGenerateHelper aliasGenerateHelper;
+    private final AliasGenerateHelper aliasGenerateHelper;
 
-    private DatabaseService databaseService;
+    private final DatabaseService databaseService;
 
-    private ModelRelaService modelRelaService;
+    private final ModelRelaService modelRelaService;
 
-    private DataSetService dataSetService;
+    private final DataSetService dataSetService;
 
-
-    @Autowired
-    private ApplicationEventPublisher eventPublisher;
+    private final ApplicationEventPublisher eventPublisher;
 
     public DimensionServiceImpl(DimensionRepository dimensionRepository, ModelService modelService,
             AliasGenerateHelper aliasGenerateHelper, DatabaseService databaseService,
-            ModelRelaService modelRelaService, DataSetService dataSetService) {
+            ModelRelaService modelRelaService, DataSetService dataSetService,
+            ApplicationEventPublisher eventPublisher) {
         this.modelService = modelService;
         this.dimensionRepository = dimensionRepository;
         this.aliasGenerateHelper = aliasGenerateHelper;
         this.databaseService = databaseService;
         this.modelRelaService = modelRelaService;
         this.dataSetService = dataSetService;
+        this.eventPublisher = eventPublisher;
     }
 
     @Override
@@ -83,7 +99,7 @@ public class DimensionServiceImpl extends ServiceImpl<DimensionDOMapper, Dimensi
         dimensionReq.createdBy(user.getName());
         DimensionDO dimensionDO = DimensionConverter.convert2DimensionDO(dimensionReq);
         dimensionRepository.createDimension(dimensionDO);
-        sendEventBatch(Lists.newArrayList(dimensionDO), EventType.ADD);
+        sendEventBatch(Lists.newArrayList(dimensionDO), EventType.ADD, user);
 
         // should update modelDetail
         modelService.updateModelByDimAndMetric(dimensionReq.getModelId(),
@@ -101,45 +117,17 @@ public class DimensionServiceImpl extends ServiceImpl<DimensionDOMapper, Dimensi
                 .collect(Collectors.toMap(DimensionResp::getBizName, a -> a, (k1, k2) -> k1));
 
         List<DimensionReq> dimensionToInsert = Lists.newArrayList();
-        List<DimensionReq> dimensionToUpdate = Lists.newArrayList();
-        List<Long> dimensionToDelete = Lists.newArrayList();
 
         // look for which dimension need to insert, update, delete
-        dimensionReqs.stream().forEach(dimension -> {
+        dimensionReqs.forEach(dimension -> {
             if (!bizNameMap.containsKey(dimension.getBizName())) {
                 dimensionToInsert.add(dimension);
-            } else {
-                DimensionResp dimensionRespByBizName = bizNameMap.get(dimension.getBizName());
-                if (null != dimensionRespByBizName && isChange(dimension, dimensionRespByBizName)) {
-                    dimension.setId(dimensionRespByBizName.getId());
-                    dimension.updatedBy(user.getName());
-                    dimensionToUpdate.add(dimension);
-                }
-            }
-        });
-
-        // the bizNames from alter dimensions
-        List<String> bizNames =
-                dimensionReqs.stream().map(DimensionReq::getBizName).collect(Collectors.toList());
-        bizNameMap.keySet().forEach(bizNameInDb -> {
-            if (!bizNames.contains(bizNameInDb)) {
-                dimensionToDelete.add(bizNameMap.get(bizNameInDb).getId());
             }
         });
 
         // insert
         if (!CollectionUtils.isEmpty(dimensionToInsert)) {
             createDimensionBatch(dimensionToInsert, user);
-        }
-
-        // update
-        if (!CollectionUtils.isEmpty(dimensionToUpdate)) {
-            updateDimensionBatch(dimensionToUpdate, user);
-        }
-
-        // delete
-        if (!CollectionUtils.isEmpty(dimensionToDelete)) {
-            deleteDimensionBatch(dimensionToDelete, user);
         }
 
     }
@@ -154,7 +142,7 @@ public class DimensionServiceImpl extends ServiceImpl<DimensionDOMapper, Dimensi
         modelService.updateModelByDimAndMetric(dimensionReqs.get(0).getModelId(), dimensionReqs,
                 null, user);
 
-        sendEventBatch(dimensionDOS, EventType.ADD);
+        sendEventBatch(dimensionDOS, EventType.ADD, user);
     }
 
     @Override
@@ -170,7 +158,7 @@ public class DimensionServiceImpl extends ServiceImpl<DimensionDOMapper, Dimensi
                 Lists.newArrayList(dimensionReq), null, user);
 
         if (!oldName.equals(dimensionDO.getName())) {
-            sendEvent(getDataItem(dimensionDO), EventType.UPDATE);
+            sendEvent(getDataItem(dimensionDO), EventType.UPDATE, user.getName());
         }
     }
 
@@ -183,7 +171,7 @@ public class DimensionServiceImpl extends ServiceImpl<DimensionDOMapper, Dimensi
         // should update modelDetail as well
         modelService.updateModelByDimAndMetric(dimensionReqList.get(0).getModelId(),
                 dimensionReqList, null, user);
-        sendEventBatch(dimensionDOS, EventType.UPDATE);
+        sendEventBatch(dimensionDOS, EventType.UPDATE, user);
     }
 
     @Override
@@ -205,9 +193,9 @@ public class DimensionServiceImpl extends ServiceImpl<DimensionDOMapper, Dimensi
         dimensionRepository.batchUpdateStatus(dimensionDOS);
         if (StatusEnum.OFFLINE.getCode().equals(metaBatchReq.getStatus())
                 || StatusEnum.DELETED.getCode().equals(metaBatchReq.getStatus())) {
-            sendEventBatch(dimensionDOS, EventType.DELETE);
+            sendEventBatch(dimensionDOS, EventType.DELETE, user);
         } else if (StatusEnum.ONLINE.getCode().equals(metaBatchReq.getStatus())) {
-            sendEventBatch(dimensionDOS, EventType.ADD);
+            sendEventBatch(dimensionDOS, EventType.ADD, user);
         }
     }
 
@@ -240,7 +228,7 @@ public class DimensionServiceImpl extends ServiceImpl<DimensionDOMapper, Dimensi
         // should update modelDetail
         modelService.deleteModelDetailByDimAndMetric(dimensionDO.getModelId(),
                 Lists.newArrayList(dimensionDO), null);
-        sendEventBatch(Lists.newArrayList(dimensionDO), EventType.DELETE);
+        sendEventBatch(Lists.newArrayList(dimensionDO), EventType.DELETE, user);
     }
 
     @Override
@@ -261,7 +249,7 @@ public class DimensionServiceImpl extends ServiceImpl<DimensionDOMapper, Dimensi
         // should update modelDetail
         modelService.deleteModelDetailByDimAndMetric(dimensionDOList.get(0).getModelId(),
                 dimensionDOList, null);
-        sendEventBatch(dimensionDOList, EventType.DELETE);
+        sendEventBatch(dimensionDOList, EventType.DELETE, user);
     }
 
     @Override
@@ -462,22 +450,22 @@ public class DimensionServiceImpl extends ServiceImpl<DimensionDOMapper, Dimensi
     }
 
     @Override
-    public void sendDimensionEventBatch(List<Long> modelIds, EventType eventType) {
+    public void sendDimensionEventBatch(List<Long> modelIds, EventType eventType, User user) {
         DimensionFilter dimensionFilter = new DimensionFilter();
         dimensionFilter.setModelIds(modelIds);
         List<DimensionDO> dimensionDOS = queryDimension(dimensionFilter);
-        sendEventBatch(dimensionDOS, eventType);
+        sendEventBatch(dimensionDOS, eventType, user);
     }
 
-    private void sendEventBatch(List<DimensionDO> dimensionDOS, EventType eventType) {
-        DataEvent dataEvent = getDataEvent(dimensionDOS, eventType);
+    private void sendEventBatch(List<DimensionDO> dimensionDOS, EventType eventType, User user) {
+        DataEvent dataEvent = getDataEvent(dimensionDOS, eventType, user.getName());
         eventPublisher.publishEvent(dataEvent);
     }
 
     public DataEvent getAllDataEvents() {
         DimensionFilter dimensionFilter = new DimensionFilter();
         List<DimensionDO> dimensionDOS = queryDimension(dimensionFilter);
-        return getDataEvent(dimensionDOS, EventType.ADD);
+        return getDataEvent(dimensionDOS, EventType.ADD, "");
     }
 
     @Override
@@ -487,31 +475,53 @@ public class DimensionServiceImpl extends ServiceImpl<DimensionDOMapper, Dimensi
         if (StringUtils.isNotEmpty(dimensionDO.getDimValueMaps())) {
             dimValueMapList = JsonUtil.toList(dimensionDO.getDimValueMaps(), DimValueMap.class);
         }
-        DimValueMap dimValueMaps = req.getDimValueMaps();
-        if (StringUtils.isEmpty(dimValueMaps.getTechName())) {
-            dimValueMaps.setTechName(dimValueMaps.getValue());
-        }
-        Map<String, DimValueMap> valeAndMapInfo = dimValueMapList.stream()
-                .collect(Collectors.toMap(DimValueMap::getValue, v -> v, (v1, v2) -> v2));
-        String value = dimValueMaps.getValue();
-        if (CollectionUtils.isEmpty(dimValueMaps.getAlias())) {
-            // 删除
-            dimValueMapList =
-                    dimValueMapList.stream().filter(map -> !map.getValue().equalsIgnoreCase(value))
-                            .collect(Collectors.toList());
-        } else {
-            // 新增
-            if (!valeAndMapInfo.keySet().contains(value)) {
-                dimValueMapList.add(dimValueMaps);
-            } else {
-                // 更新
-                dimValueMapList.stream().forEach(map -> {
-                    if (map.getValue().equalsIgnoreCase(value)) {
-                        map.setAlias(dimValueMaps.getAlias());
-                    }
-                });
+
+        // 预先处理请求列表，设置默认的 techName
+        for (DimValueMap dimValueMap : req.getDimValueMaps()) {
+            if (StringUtils.isEmpty(dimValueMap.getTechName())) {
+                dimValueMap.setTechName(dimValueMap.getValue());
             }
         }
+
+        // 构建现有数据的 Map，用于快速查找 (value -> DimValueMap)
+        Map<String, DimValueMap> existingMap = dimValueMapList.stream()
+                .collect(Collectors.toMap(DimValueMap::getValue, v -> v, (v1, v2) -> v2));
+
+        // 收集需要删除的 values（alias 为空的）
+        Set<String> valuesToDelete = req.getDimValueMaps().stream()
+                .filter(dimValueMap -> CollectionUtils.isEmpty(dimValueMap.getAlias()))
+                .map(DimValueMap::getValue).collect(Collectors.toSet());
+
+        // 一次性删除所有需要删除的数据
+        if (!valuesToDelete.isEmpty()) {
+            dimValueMapList =
+                    dimValueMapList.stream().filter(map -> !valuesToDelete.contains(map.getValue()))
+                            .collect(Collectors.toList());
+            // 同时从 existingMap 中移除
+            existingMap.keySet().removeAll(valuesToDelete);
+        }
+
+        // 处理新增和更新
+        for (DimValueMap dimValueMap : req.getDimValueMaps()) {
+            // 跳过需要删除的
+            if (CollectionUtils.isEmpty(dimValueMap.getAlias())) {
+                continue;
+            }
+
+            String value = dimValueMap.getValue();
+            if (!existingMap.containsKey(value)) {
+                // 新增
+                dimValueMapList.add(dimValueMap);
+                existingMap.put(value, dimValueMap);
+            } else {
+                // 更新 - 直接更新已存在的对象
+                DimValueMap existing = existingMap.get(value);
+                existing.setAlias(dimValueMap.getAlias());
+                existing.setTechName(dimValueMap.getTechName());
+                existing.setBizName(dimValueMap.getBizName());
+            }
+        }
+
         dimensionDO.setDimValueMaps(JsonUtil.toString(dimValueMapList));
         updateById(dimensionDO);
         return true;
@@ -529,14 +539,16 @@ public class DimensionServiceImpl extends ServiceImpl<DimensionDOMapper, Dimensi
                 .domainId(dimensionResp.getDomainId().toString()).type(TypeEnums.DIMENSION).build();
     }
 
-    private DataEvent getDataEvent(List<DimensionDO> dimensionDOS, EventType eventType) {
+    private DataEvent getDataEvent(List<DimensionDO> dimensionDOS, EventType eventType,
+            String userName) {
         List<DataItem> dataItems = dimensionDOS.stream().map(this::getDataItem)
                 .filter(Objects::nonNull).collect(Collectors.toList());
-        return new DataEvent(this, dataItems, eventType);
+        return new DataEvent(this, dataItems, eventType, userName);
     }
 
-    private void sendEvent(DataItem dataItem, EventType eventType) {
-        eventPublisher.publishEvent(new DataEvent(this, Lists.newArrayList(dataItem), eventType));
+    private void sendEvent(DataItem dataItem, EventType eventType, String userName) {
+        eventPublisher.publishEvent(
+                new DataEvent(this, Lists.newArrayList(dataItem), eventType, userName));
     }
 
     private boolean isChange(DimensionReq dimensionReq, DimensionResp dimensionResp) {
